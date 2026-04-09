@@ -1,0 +1,593 @@
+# Project Specification (Final+): Autonomous Claude Command Guard with Validation & Retry
+
+## 1. Overview
+
+This system evaluates and executes Claude-proposed commands using:
+
+* Rule-based safety checks
+* Local LLM (Ollama)
+* **Strict output validation**
+* **Retry + recovery logic**
+
+It must be **robust against malformed LLM outputs and transient failures**.
+
+---
+
+## 2. Updated Execution Flow
+
+```id="flow1"
+Claude Command
+   ↓
+Rule Engine (fast check)
+   ↓
+LLM Evaluation (Ollama)
+   ↓
+Output Validation Layer
+   ↓
+Retry / Recovery (if needed)
+   ↓
+Decision Engine
+   ↓
+Execution Controller
+```
+
+---
+
+## 3. LLM Output Contract (STRICT)
+
+Expected JSON:
+
+```json id="schema1"
+{
+  "decision": "ALLOW | DENY | ASK",
+  "confidence": 0.0-1.0,
+  "risk_level": "LOW | MEDIUM | HIGH",
+  "reason": "string"
+}
+```
+
+---
+
+## 4. Validation Layer (Critical)
+
+### 4.1 Schema Validation
+
+Validate:
+
+* JSON is parseable
+* Required keys exist
+* Types are correct:
+
+  * decision → string (enum)
+  * confidence → float ∈ [0,1]
+  * risk_level → enum
+  * reason → non-empty string
+
+---
+
+### 4.2 Semantic Validation
+
+Reject outputs where:
+
+* confidence is outside [0,1]
+* decision not in allowed set
+* empty or vague reason (e.g., "seems fine")
+* inconsistent signals:
+
+  * decision=ALLOW but risk=HIGH
+
+---
+
+### 4.3 Strict Parser
+
+```python id="parser1"
+def validate_output(obj):
+    required = ["decision", "confidence", "risk_level", "reason"]
+    
+    for k in required:
+        if k not in obj:
+            return False
+    
+    if obj["decision"] not in ["ALLOW", "DENY", "ASK"]:
+        return False
+    
+    if not (0 <= obj["confidence"] <= 1):
+        return False
+    
+    if obj["risk_level"] not in ["LOW", "MEDIUM", "HIGH"]:
+        return False
+    
+    if len(obj["reason"].strip()) < 5:
+        return False
+    
+    return True
+```
+
+---
+
+## 5. Retry Logic
+
+### 5.1 Retry Conditions
+
+Trigger retry if:
+
+* JSON parsing fails
+* Validation fails
+* Empty response
+* Timeout / API error
+
+---
+
+### 5.2 Retry Strategy
+
+* Max retries: **3**
+* Backoff: exponential
+
+```python id="retry1"
+for attempt in range(3):
+    response = call_llm(prompt)
+    
+    try:
+        parsed = json.loads(response)
+    except:
+        continue
+    
+    if validate_output(parsed):
+        return parsed
+    
+    prompt = reinforce_prompt(prompt, response)
+```
+
+---
+
+### 5.3 Prompt Reinforcement (Key Idea)
+
+On retry, make the model stricter:
+
+```id="reinforce1"
+Your previous output was invalid.
+
+You MUST return STRICT JSON with:
+- correct schema
+- valid confidence (0-1)
+- valid enums
+
+DO NOT include explanations outside JSON.
+```
+
+---
+
+## 6. Fallback Policy (Fail-Safe)
+
+If all retries fail:
+
+```python id="fallback1"
+return {
+    "decision": "DENY",
+    "confidence": 0.0,
+    "risk_level": "HIGH",
+    "reason": "LLM output invalid after retries"
+}
+```
+
+→ Guarantees safety
+
+---
+
+## 7. Decision Engine (Unchanged Core)
+
+```python id="decision1"
+def decide(result, config):
+    if result["decision"] == "DENY":
+        return "BLOCK"
+    
+    if result["confidence"] <= config.deny_threshold:
+        return "BLOCK"
+    
+    if result["decision"] == "ALLOW" and result["confidence"] >= config.allow_threshold:
+        return "EXECUTE"
+    
+    return "ASK"
+```
+
+---
+
+## 8. Additional Safeguards
+
+### 8.1 Hard Override on Invalid States
+
+If:
+
+* validation failed initially
+* retry exhausted
+
+→ **force BLOCK**
+
+---
+
+### 8.2 Deterministic Mode
+
+Set LLM parameters:
+
+```yaml id="llmconfig"
+temperature: 0.1
+top_p: 0.9
+```
+
+→ reduces variance → improves schema adherence
+
+---
+
+### 8.3 Output Sanitization
+
+Before parsing:
+
+* strip markdown
+* remove ```json wrappers
+* trim whitespace
+
+---
+
+## 9. Logging Enhancements
+
+Log additional metadata:
+
+```json id="log1"
+{
+  "command": "...",
+  "attempts": 3,
+  "validation_passed": true,
+  "fallback_used": false,
+  "raw_responses": ["...", "..."],
+  "final_decision": "EXECUTE"
+}
+```
+
+---
+
+## 10. Failure Modes Covered
+
+| Failure             | Handling     |
+| ------------------- | ------------ |
+| Invalid JSON        | Retry        |
+| Missing fields      | Retry        |
+| Hallucinated schema | Retry        |
+| Timeout             | Retry        |
+| Repeated failure    | BLOCK        |
+| Conflicting signals | ASK or BLOCK |
+
+---
+
+## 11. Acceptance Criteria (Updated)
+
+* [ ] LLM outputs are always schema-validated
+* [ ] Invalid outputs trigger retries
+* [ ] Retry improves output correctness
+* [ ] System never executes on invalid output
+* [ ] Fallback guarantees safety (BLOCK)
+* [ ] Logs capture retries + failures
+
+---
+
+## 12. Key Principle
+
+> **Never trust a single LLM output. Validate, retry, then decide.**
+
+---
+
+## 13. Implementation Order (Updated)
+
+1. Rule engine
+2. LLM call wrapper
+3. **Validation layer (mandatory before anything else)**
+4. Retry logic
+5. Decision engine
+6. Execution controller
+7. Logging
+
+---
+
+## 14. Final System Behavior
+
+* Deterministic where possible
+* Probabilistic where necessary
+* Fail-safe always
+
+---
+
+# Extension: Command Logging + Temporal Audit System
+
+## 1. Objective
+
+Add a **persistent, structured logging system** that records all Claude-requested commands per repository, enabling:
+
+* Historical traceability
+* Pattern analysis
+* Future **window-based anomaly detection (audit model)**
+
+---
+
+## 2. Core Concept
+
+Shift from:
+
+> Single-command safety
+
+To:
+
+> **Behavior over time**
+
+Examples of risks only visible over time:
+
+* Gradual data exfiltration
+* Repeated file probing
+* Suspicious command sequences
+* Privilege escalation attempts spread across steps
+
+---
+
+## 3. Logging Architecture
+
+### Per-Repo Storage
+
+```id="logstruct1"
+.claude_guard/
+    history.jsonl        # append-only log
+    session_meta.json    # session tracking
+```
+
+Use **JSONL (JSON Lines)** for scalability.
+
+---
+
+## 4. Log Entry Schema (Critical)
+
+Each command generates ONE entry:
+
+```json id="schema2"
+{
+  "timestamp": "ISO-8601",
+  "session_id": "uuid",
+  "repo_path": "...",
+  
+  "command": "...",
+  "command_hash": "...",
+
+  "classification": "FILE_OPS | GIT | NETWORK | PYTHON | INSTALL | OTHER",
+
+  "llm_decision": "ALLOW | DENY | ASK",
+  "confidence": 0.87,
+  "risk_level": "LOW | MEDIUM | HIGH",
+
+  "final_action": "EXECUTE | BLOCK | ASK",
+  "executed": true,
+
+  "reason": "...",
+
+  "rule_triggered": true/false,
+  "fallback_used": false,
+
+  "latency_ms": 120,
+
+  "cwd": "...",
+  "branch": "main"
+}
+```
+
+---
+
+## 5. Command Hashing (Important)
+
+```python id="hash1"
+import hashlib
+
+def hash_command(cmd):
+    return hashlib.sha256(cmd.encode()).hexdigest()
+```
+
+Purpose:
+
+* Detect repeated patterns
+* Enable frequency-based analysis
+
+---
+
+## 6. Session Tracking
+
+### session_meta.json
+
+```json id="session1"
+{
+  "session_id": "uuid",
+  "start_time": "...",
+  "repo": "...",
+  "total_commands": 42
+}
+```
+
+---
+
+## 7. Classification Layer (New)
+
+Before logging, classify command:
+
+```python id="classify1"
+def classify_command(cmd):
+    if "git" in cmd:
+        return "GIT"
+    if "pip" in cmd or "npm" in cmd:
+        return "INSTALL"
+    if "python" in cmd:
+        return "PYTHON"
+    if "rm" in cmd or "cp" in cmd:
+        return "FILE_OPS"
+    if "curl" in cmd or "wget" in cmd:
+        return "NETWORK"
+    return "OTHER"
+```
+
+This is critical for future modeling.
+
+---
+
+## 8. Window-Based Audit System (Future Hook)
+
+### Concept
+
+Analyze commands over a sliding window:
+
+```id="window1"
+Window = last N commands OR last T minutes
+```
+
+---
+
+### Example Signals
+
+#### 1. Frequency Spike
+
+* Too many commands in short time
+
+#### 2. Repetition Pattern
+
+* Same command repeated (probing)
+
+#### 3. Escalation Pattern
+
+```
+ls → cat → grep → rm
+```
+
+#### 4. Mixed Risk Sequence
+
+* Many LOW risk commands leading to HIGH risk
+
+---
+
+## 9. Audit Interface (Design Now, Implement Later)
+
+```python id="audit1"
+def audit_window(logs: List[dict]) -> dict:
+    return {
+        "anomaly_score": 0.0 - 1.0,
+        "flags": [],
+        "reason": ""
+    }
+```
+
+---
+
+## 10. Real-Time Hook (Optional Future)
+
+After each command:
+
+```python id="hook1"
+recent_logs = get_last_n_logs(20)
+
+audit = audit_window(recent_logs)
+
+if audit["anomaly_score"] > 0.8:
+    force_next_action = "ASK" or "BLOCK"
+```
+
+---
+
+## 11. Logging Implementation
+
+### Append-only writer
+
+```python id="logger1"
+def log_event(entry):
+    with open(".claude_guard/history.jsonl", "a") as f:
+        f.write(json.dumps(entry) + "\n")
+```
+
+---
+
+## 12. Performance Considerations
+
+* JSONL avoids full file rewrite
+* Can stream logs
+* Easy to load last N entries
+
+---
+
+## 13. Safety Enhancements Enabled
+
+With this system, you can later:
+
+### A. Train Local Audit Model
+
+* Sequence classification
+* Anomaly detection (Isolation Forest, LSTM, Transformer)
+
+### B. Add Risk Accumulation
+
+```python id="riskagg1"
+cumulative_risk += current_risk
+```
+
+---
+
+### C. Detect “Slow Attacks”
+
+Example:
+
+```
+Step 1: harmless read
+Step 2: more reads
+Step 3: selective deletion
+```
+
+Individually safe → collectively dangerous
+
+---
+
+## 14. Acceptance Criteria (New)
+
+* [ ] All commands are logged in JSONL format
+* [ ] Each entry includes classification + decision metadata
+* [ ] Logs are append-only and persistent
+* [ ] Session tracking works
+* [ ] Last-N retrieval is efficient
+* [ ] Schema is strictly followed
+
+---
+
+## 15. Key Design Principle
+
+> **Single commands lie. Sequences reveal intent.**
+
+---
+
+## 16. Implementation Order (Updated)
+
+1. Logging schema + writer
+2. Command classification
+3. Session tracking
+4. Integrate logging into execution flow
+5. Add retrieval API (`get_last_n_logs`)
+6. Stub audit module (future-ready)
+
+---
+
+## 17. Future Direction
+
+This sets you up for:
+
+* Local behavioral AI security
+* Repo-specific anomaly detection
+* Trust scoring per session
+* Fully autonomous safe agents
+
+---
+
+## 18. Final Insight
+
+You’re no longer just filtering commands.
+
+You’re building:
+
+> **A lightweight AI-powered behavioral security layer for developer agents**
+
+---
