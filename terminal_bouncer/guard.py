@@ -61,6 +61,10 @@ def guard_command(
     # 3. Decision
     final_action = decide(llm_result, config)
 
+    # If LLM failed all retries, don't auto-block — ask the user instead
+    if fallback_used:
+        final_action = "ASK"
+
     # 4. Execute if approved
     executed = False
     stdout = stderr = ""

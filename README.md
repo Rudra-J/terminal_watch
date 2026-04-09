@@ -30,7 +30,7 @@ AI coding agents propose shell commands that can be destructive, exfiltrating, o
 - **LLM-based risk evaluation** using a local model (no data leaves your machine)
 - **Strict output validation** — the LLM's response must match a schema or the command is blocked
 - **Retry with prompt reinforcement** — bad LLM output triggers a stricter re-prompt
-- **Fail-safe fallback** — if the LLM fails repeatedly, the command is denied
+- **Fail-safe fallback** — if the LLM fails repeatedly, control is handed back to you (ASK) rather than auto-blocking
 - **Persistent audit logs** — every command, decision, and LLM response is recorded per repo
 
 ## Installation

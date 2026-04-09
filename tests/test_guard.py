@@ -53,11 +53,12 @@ def test_llm_deny_blocks_command(config, tmp_path):
     assert result["executed"] is False
 
 
-def test_fallback_blocks_command(config, tmp_path):
+def test_fallback_asks_user(config, tmp_path):
     with patch("terminal_bouncer.guard.evaluate_command", return_value=_fallback_llm()):
         result = guard_command("some command", config=config, cwd=str(tmp_path))
-    assert result["final_action"] == "BLOCK"
+    assert result["final_action"] == "ASK"
     assert result["log"]["fallback_used"] is True
+    assert result["executed"] is False
 
 
 def test_log_entry_has_required_fields(config, tmp_path):
