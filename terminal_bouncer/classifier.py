@@ -11,10 +11,10 @@ def classify_command(cmd: str) -> str:
     if c.startswith("python") and (c.startswith("python ") or c.startswith("python3")):
         return "PYTHON"
 
-    if any(token in c for token in ("rm ", "cp ", "mv ", "mkdir ", "touch ", "chmod ", "chown ")):
+    if any(c.startswith(token) for token in ("rm ", "cp ", "mv ", "mkdir ", "touch ", "chmod ", "chown ")):
         return "FILE_OPS"
 
-    if any(token in c for token in ("curl ", "wget ", "ssh ", "scp ", "nc ", "netstat")):
+    if any(c.startswith(token) for token in ("curl ", "wget ", "ssh ", "scp ", "nc ", "netstat ")):
         return "NETWORK"
 
     return "OTHER"
